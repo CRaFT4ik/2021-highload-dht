@@ -53,6 +53,7 @@ public class LsmDAO implements DAO {
     private final ReentrantReadWriteLock upsertRWLock = new ReentrantReadWriteLock();
 
     private volatile boolean serverIsDown;
+    private volatile boolean flushIsNotSuccess;
 
     /**
      * Create LsmDAO from config.
@@ -75,7 +76,6 @@ public class LsmDAO implements DAO {
             if (serverIsDown) {
                 throw new ServerNotActiveExc();
             }
-
             return rangeImpl(fromKey, toKey);
         } finally {
             rangeRWLock.readLock().unlock();
@@ -175,6 +175,12 @@ public class LsmDAO implements DAO {
     private void scheduleFlush() {
         waitForFlushingComplete();
 
+        if (flushIsNotSuccess) { // Restoring not flushed data.
+            MemTable flushingTable = flushingMemTable.get();
+            flushingTable.putAll(memTable.get());
+            memTable.set(flushingTable);
+        }
+
         MemTable flushingTable = memTable.get();
         flushingMemTable.set(flushingTable);
         memTable.set(MemTable.newStorage(flushingTable.getId() + 1));
@@ -184,16 +190,14 @@ public class LsmDAO implements DAO {
         flushingFuture = executorFlush.submit(() -> {
             SSTable flushResult = flush(flushingTable);
             if (flushResult == null) {
-                // Restoring not flushed data.
-                flushingTable.putAll(memTable.get());
-                memTable.set(flushingTable);
-                return;
-            }
-            rangeRWLock.writeLock().lock();
-            try {
-                tables.add(flushResult);
-            } finally {
-                rangeRWLock.writeLock().unlock();
+                flushIsNotSuccess = true;
+            } else {
+                rangeRWLock.writeLock().lock();
+                try {
+                    tables.add(flushResult);
+                } finally {
+                    rangeRWLock.writeLock().unlock();
+                }
             }
         });
     }
