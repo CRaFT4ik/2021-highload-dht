@@ -15,7 +15,6 @@ import javax.annotation.concurrent.GuardedBy;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
-import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -29,6 +28,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static ru.mail.polis.ServiceUtils.shutdownAndAwaitExecutor;
 import static ru.mail.polis.lsm.artem_drozdov.SSTable.sizeOf;
+import static ru.mail.polis.lsm.artem_drozdov.Utils.flush;
 import static ru.mail.polis.lsm.artem_drozdov.Utils.map;
 import static ru.mail.polis.lsm.artem_drozdov.Utils.mergeTwo;
 import static ru.mail.polis.lsm.artem_drozdov.Utils.sstableRanges;
@@ -41,7 +41,10 @@ public class LsmDAO implements DAO {
     private final DAOConfig config;
 
     private final ExecutorService executorFlush = Executors.newSingleThreadScheduledExecutor();
-    private Future<?> flushingFuture = new CompletedFuture<>(null);
+    private Future<?> futureFlush = new CompletedFuture<>(null);
+
+    private final ExecutorService executorCompact = Executors.newSingleThreadScheduledExecutor();
+    private Future<?> futureCompact = new CompletedFuture<>(null);
 
     private final AtomicReference<MemTable> memTable = new AtomicReference<>();
     private final AtomicReference<MemTable> flushingMemTable = new AtomicReference<>();
@@ -65,8 +68,10 @@ public class LsmDAO implements DAO {
         this.config = config;
         List<SSTable> ssTables = SSTable.loadFromDir(config.dir);
         tables.addAll(ssTables);
-        memTable.set(MemTable.newStorage(tables.size()));
-        flushingMemTable.set(MemTable.newStorage(tables.size() + 1));
+
+        int nextMemTableId = tables.size();
+        memTable.set(MemTable.newStorage(nextMemTableId));
+        flushingMemTable.set(MemTable.newStorage(nextMemTableId + 1));
     }
 
     @Override
@@ -99,7 +104,7 @@ public class LsmDAO implements DAO {
     }
 
     @SuppressWarnings("LockNotBeforeTry")
-    public void upsertImpl(Record record) {
+    private void upsertImpl(Record record) {
         upsertRWLock.readLock().lock();
         while (memoryConsumption.addAndGet(sizeOf(record)) > config.memoryLimit) {
             upsertRWLock.readLock().unlock();
@@ -139,19 +144,40 @@ public class LsmDAO implements DAO {
         }
     }
 
+    /**
+     * Осуществляет свертку нескольких SSTable в один.
+     * Внутри класса вызывается из flush task, который работает в единственном
+     * экземпляре в один момент времени.
+     * Метод использует synchronized, чтобы обеспечить безопасность для future compact.
+     * Это не должно быть проблемой производительности, потому что метод вызывается редко.
+     */
     @Override
-    public void closeAndCompact() {
-        synchronized (this) {
-            SSTable table;
-            try {
-                table = SSTable.compact(config.dir, range(null, null));
-            } catch (IOException e) {
-                throw new UncheckedIOException("Can't compact", e);
-            }
+    public void compact() {
+        synchronized (executorCompact) {
+            waitForCompactingComplete();
+            futureCompact = executorCompact.submit(this::compactImpl);
+        }
+    }
+
+    private void compactImpl() {
+        LOG.info("Compact operation started");
+
+        SSTable table;
+        try {
+            table = SSTable.compact(config.dir, sstableRanges(tables, null, null));
+        } catch (IOException e) {
+            throw new UncheckedIOException("Can't compact", e);
+        }
+
+        rangeRWLock.writeLock().lock();
+        try {
             tables.clear();
             tables.add(table);
-            memTable.set(MemTable.newStorage(tables.size()));
+        } finally {
+            rangeRWLock.writeLock().unlock();
         }
+
+        LOG.info("Compact operation finished");
     }
 
     @Override
@@ -163,9 +189,11 @@ public class LsmDAO implements DAO {
             serverIsDown = true;
             scheduleFlush();
             waitForFlushingComplete();
+            waitForCompactingComplete();
         } finally {
             upsertRWLock.writeLock().unlock();
             shutdownAndAwaitExecutor(executorFlush, LOG);
+            shutdownAndAwaitExecutor(executorCompact, LOG);
         }
 
         LOG.info("{} closed", getClass().getName());
@@ -187,46 +215,46 @@ public class LsmDAO implements DAO {
 
         assert !rangeRWLock.isWriteLockedByCurrentThread();
 
-        flushingFuture = executorFlush.submit(() -> {
-            SSTable flushResult = flush(flushingTable);
+        futureFlush = executorFlush.submit(() -> {
+            SSTable flushResult = flush(flushingTable, config.dir, LOG);
             if (flushResult == null) {
                 flushIsNotSuccess = true;
-            } else {
-                rangeRWLock.writeLock().lock();
-                try {
-                    tables.add(flushResult);
-                } finally {
-                    rangeRWLock.writeLock().unlock();
-                }
+                return;
+            }
+
+            boolean needCompact;
+            rangeRWLock.writeLock().lock();
+            try {
+                tables.add(flushResult);
+                needCompact = tables.size() > config.compactLimit;
+            } finally {
+                rangeRWLock.writeLock().unlock();
+            }
+            if (needCompact) {
+                compact();
             }
         });
     }
 
     @GuardedBy("upsertRWLock")
     private void waitForFlushingComplete() {
-        // Protects flushingFuture variable.
+        // Protects futureFlush variable.
         assert upsertRWLock.isWriteLockedByCurrentThread();
 
         try {
-            flushingFuture.get();
+            futureFlush.get();
         } catch (InterruptedException | ExecutionException e) {
             LOG.error("flush future wait error: {}", e.getMessage(), e);
         }
     }
 
-    private SSTable flush(MemTable memTable) {
-        try {
-            LOG.debug("Flushing...");
-
-            Path dir = config.dir;
-            Path file = dir.resolve(SSTable.SSTABLE_FILE_PREFIX + memTable.getId());
-
-            return SSTable.write(memTable.values().iterator(), file);
-        } catch (IOException e) {
-            LOG.error("flush error: {}", e.getMessage(), e);
-            return null;
-        } finally {
-            LOG.debug("Flushing completed");
+    private void waitForCompactingComplete() {
+        synchronized (executorCompact) {
+            try {
+                futureCompact.get();
+            } catch (InterruptedException | ExecutionException e) {
+                LOG.error("compact future wait error: {}", e.getMessage(), e);
+            }
         }
     }
 }

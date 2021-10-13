@@ -14,9 +14,9 @@ public final class ServiceUtils {
     public static void shutdownAndAwaitExecutor(ExecutorService executorService, Logger log) {
         try {
             executorService.shutdown();
-            if (!executorService.awaitTermination(1, TimeUnit.MINUTES)) {
+            if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
                 executorService.shutdownNow();
-                if (!executorService.awaitTermination(1, TimeUnit.MINUTES)) {
+                if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
                     throw new InterruptedException();
                 }
             }

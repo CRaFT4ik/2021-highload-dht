@@ -1,11 +1,14 @@
 package ru.mail.polis.lsm.artem_drozdov;
 
+import org.slf4j.Logger;
 import ru.mail.polis.lsm.Record;
 import ru.mail.polis.lsm.artem_drozdov.iterators.MergeIterator;
 import ru.mail.polis.lsm.artem_drozdov.iterators.PeekingIterator;
 
 import javax.annotation.Nullable;
+import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
@@ -61,5 +64,19 @@ public final class Utils {
 
     public static Iterator<Record> mergeTwo(Iterator<Record> left, Iterator<Record> right) {
         return new MergeIterator(new PeekingIterator(left), new PeekingIterator(right));
+    }
+
+    public static SSTable flush(MemTable memTable, Path dir, Logger logger) {
+        try {
+            logger.debug("Flushing...");
+
+            Path file = dir.resolve(SSTable.SSTABLE_FILE_PREFIX + memTable.getId());
+            return SSTable.write(memTable.values().iterator(), file);
+        } catch (IOException e) {
+            logger.error("flush error: {}", e.getMessage(), e);
+            return null;
+        } finally {
+            logger.debug("Flushing completed");
+        }
     }
 }
