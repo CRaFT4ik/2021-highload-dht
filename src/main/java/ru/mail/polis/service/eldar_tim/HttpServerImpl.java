@@ -13,16 +13,11 @@ import org.slf4j.LoggerFactory;
 import ru.mail.polis.lsm.DAO;
 import ru.mail.polis.lsm.Record;
 import ru.mail.polis.service.Service;
-import ru.mail.polis.service.exceptions.ServerNotActiveExc;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Iterator;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
-import static ru.mail.polis.service.eldar_tim.ServerUtils.shutdownAndAwaitExecutor;
 
 /**
  * Service implementation for Stage 1-2 within 2021-highload-dht.
@@ -33,14 +28,10 @@ public class HttpServerImpl extends HttpServer implements Service {
     private static final Logger LOG = LoggerFactory.getLogger(HttpServerImpl.class);
 
     private final DAO dao;
-    private final ExecutorService executorService;
 
     public HttpServerImpl(final int port, final DAO dao) throws IOException {
         super(buildHttpServerConfig(port));
         this.dao = dao;
-
-        int proc = Runtime.getRuntime().availableProcessors();
-        executorService = Executors.newFixedThreadPool(proc, new NamedThreadFactory("worker", proc));
     }
 
     private static HttpServerConfig buildHttpServerConfig(final int port) {
@@ -50,14 +41,13 @@ public class HttpServerImpl extends HttpServer implements Service {
         acceptorConfig.port = port;
         acceptorConfig.reusePort = true;
         acceptorConfig.deferAccept = true;
-        httpServerConfig.acceptors = new AcceptorConfig[] { acceptorConfig };
+        httpServerConfig.acceptors = new AcceptorConfig[]{acceptorConfig};
         return httpServerConfig;
     }
 
     @Override
     public synchronized void stop() {
         super.stop();
-        shutdownAndAwaitExecutor(executorService, LOG);
     }
 
     @Override
@@ -73,15 +63,17 @@ public class HttpServerImpl extends HttpServer implements Service {
 
     @Path("/v0/status")
     public void status(HttpSession session) {
-        executorService.execute(exceptionSafe(session, () -> {
+        try {
             Response response = Response.ok(Response.OK);
             session.sendResponse(response);
-        }));
+        } catch (IOException e) {
+            sendError("Something went wrong", Response.INTERNAL_ERROR, session, e);
+        }
     }
 
     @Path("/v0/entity")
     public void entity(Request request, HttpSession session, @Param(value = "id", required = true) final String id) {
-        executorService.execute(exceptionSafe(session, () -> {
+        try {
             if (id.isBlank()) {
                 Response response = new Response(Response.BAD_REQUEST, "Bad id".getBytes(StandardCharsets.UTF_8));
                 session.sendResponse(response);
@@ -104,7 +96,9 @@ public class HttpServerImpl extends HttpServer implements Service {
                     break;
             }
             session.sendResponse(response);
-        }));
+        } catch (IOException e) {
+            sendError("Something went wrong", Response.INTERNAL_ERROR, session, e);
+        }
     }
 
     private Response get(String id) {
@@ -134,18 +128,6 @@ public class HttpServerImpl extends HttpServer implements Service {
         final byte[] result = new byte[buffer.remaining()];
         buffer.get(result);
         return result;
-    }
-
-    private Runnable exceptionSafe(HttpSession session, ServerRunnable runnable) {
-        return () -> {
-            try {
-                runnable.run();
-            } catch (ServerNotActiveExc e) {
-                sendError("Service is down", Response.SERVICE_UNAVAILABLE, session, e);
-            } catch (Exception e) {
-                sendError("Something went wrong", Response.INTERNAL_ERROR, session, e);
-            }
-        };
     }
 
     private void sendError(String description, String httpCode, HttpSession session, Exception e) {
