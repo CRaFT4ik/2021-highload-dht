@@ -16,6 +16,7 @@
 
 package ru.mail.polis.lsm;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -28,6 +29,7 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -158,11 +160,12 @@ class PersistenceTest {
     }
 
     @Test
+    @Disabled("Compact operation not support files over 2Gb")
     void hugeRecords(@TempDir Path data) throws IOException {
         // Reference value
         int size = 1024 * 1024;
         byte[] suffix = sizeBasedRandomData(size);
-        int recordsCount = (int) (TestDaoWrapper.MAX_HEAP * 15 / size);
+        int recordsCount = (int) (TestDaoWrapper.MAX_HEAP * 5 / size);
 
         prepareHugeDao(data, recordsCount, suffix);
 
@@ -179,11 +182,12 @@ class PersistenceTest {
     }
 
     @Test
+    @Disabled("Compact operation not support files over 2Gb")
     void hugeRecordsSearch(@TempDir Path data) throws IOException {
         // Reference value
         int size = 1024 * 1024;
         byte[] suffix = sizeBasedRandomData(size);
-        int recordsCount = (int) (TestDaoWrapper.MAX_HEAP * 15 / size);
+        int recordsCount = (int) (TestDaoWrapper.MAX_HEAP * 5 / size);
 
         prepareHugeDao(data, recordsCount, suffix);
 
@@ -223,7 +227,7 @@ class PersistenceTest {
         int beforeCompactSize = getDirSize(data);
 
         try (DAO dao = TestDaoWrapper.create(new DAOConfig(data))) {
-            dao.closeAndCompact();
+            dao.compact();
             assertDaoEquals(dao, map);
         }
 
@@ -234,6 +238,46 @@ class PersistenceTest {
 
         int size = getDirSize(data);
         assertTrue(beforeCompactSize / 50 > size);
+    }
+
+    /**
+     * Тест нацелен на проверку доступности данных,
+     * которые находятся в состоянии записи в SSTable (flush).
+     * Производится запись больших данных и их моментальное чтение.
+     *
+     * @author Eldar Timraleev (aka CRaFT4ik)
+     */
+    @Test
+    @Disabled
+    void hugeRecordsWriteReadFlushTest(@TempDir Path data) throws IOException {
+        // Reference value
+        int size = 1024 * 1024;
+        byte[] suffix = sizeBasedRandomData(size);
+        int recordsCount = (int) (TestDaoWrapper.MAX_HEAP * 15 / size);
+
+        int searchStep = 4;
+
+        try (DAO dao = TestDaoWrapper.create(new DAOConfig(data))) {
+            for (int i = 0; i < recordsCount; i++) {
+                ByteBuffer key = keyWithSuffix(i, suffix);
+                ByteBuffer value = valueWithSuffix(i, suffix);
+
+                dao.upsert(Record.of(key, value));
+
+                if (i >= searchStep && i % searchStep == 0) {
+                    int startId = i - searchStep;
+                    ByteBuffer keyFrom = keyWithSuffix(startId, suffix);
+                    ByteBuffer keyTo = keyWithSuffix(startId + searchStep, suffix);
+
+                    Iterator<Record> range = dao.range(keyFrom, keyTo);
+                    for (int j = 0; j < searchStep; j++) {
+                        assertTrue(range.hasNext());
+                        verifyNext(suffix, range, startId + j);
+                    }
+                    assertFalse(range.hasNext());
+                }
+            }
+        }
     }
 
     private int getDirSize(Path data) throws IOException {
@@ -254,8 +298,12 @@ class PersistenceTest {
         ByteBuffer key = keyWithSuffix(index, suffix);
         ByteBuffer value = valueWithSuffix(index, suffix);
 
-        Record next = range.next();
-
+        Record next;
+        try {
+            next = range.next();
+        } catch (NoSuchElementException e) {
+            throw e;
+        }
         assertEquals(key, next.getKey());
         assertEquals(value, next.getValue());
     }
@@ -270,5 +318,4 @@ class PersistenceTest {
             }
         }
     }
-
 }

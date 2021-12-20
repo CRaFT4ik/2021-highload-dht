@@ -38,8 +38,8 @@ public class TestDaoWrapper implements DAO {
     }
 
     @Override
-    public Iterator<Record> range(@Nullable ByteBuffer fromKey, @Nullable ByteBuffer toKey) {
-        return delegate.range(toReadOnly(fromKey), toReadOnly(toKey));
+    public Iterator<Record> range(@Nullable ByteBuffer fromKey, @Nullable ByteBuffer toKey, boolean withTombstones) {
+        return delegate.range(toReadOnly(fromKey), toReadOnly(toKey), withTombstones);
     }
 
     @Override
@@ -48,8 +48,8 @@ public class TestDaoWrapper implements DAO {
     }
 
     @Override
-    public void closeAndCompact() {
-        delegate.closeAndCompact();
+    public void compact() {
+        delegate.compact();
     }
 
     @Override

@@ -7,7 +7,9 @@
 
     <description>Technopolis Java Rule Set</description>
 
-    <rule ref="category/java/bestpractices.xml"/>
+    <rule ref="category/java/bestpractices.xml">
+        <exclude name="AvoidMessageDigestField"/>
+    </rule>
     <rule ref="category/java/codestyle.xml">
         <exclude name="CommentDefaultAccessModifier"/>
         <exclude name="LocalVariableCouldBeFinal"/>
@@ -19,6 +21,8 @@
         <exclude name="ShortMethodName"/>
         <exclude name="ShortVariable"/>
         <exclude name="UselessParentheses"/>
+        <exclude name="AtLeastOneConstructor"/>
+        <exclude name="ConfusingTernary"/>
     </rule>
     <rule ref="category/java/codestyle.xml/ClassNamingConventions">
         <properties>
@@ -37,6 +41,7 @@
         <exclude name="LawOfDemeter"/>
         <exclude name="LoosePackageCoupling"/>
         <exclude name="TooManyMethods"/>
+        <exclude name="UseUtilityClass"/>
     </rule>
     <rule ref="category/java/design.xml/CyclomaticComplexity">
         <properties>
@@ -51,10 +56,11 @@
     <rule ref="category/java/multithreading.xml">
         <exclude name="AvoidSynchronizedAtMethodLevel"/>
         <exclude name="DoNotUseThreads"/>
+        <exclude name="AvoidUsingVolatile"/>
+        <exclude name="UseConcurrentHashMap"/>
     </rule>
     <rule ref="category/java/performance.xml">
         <exclude name="AvoidInstantiatingObjectsInLoops"/>
     </rule>
     <rule ref="category/java/security.xml"/>
-
 </ruleset>

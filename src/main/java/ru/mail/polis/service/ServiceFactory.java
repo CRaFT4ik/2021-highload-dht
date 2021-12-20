@@ -16,19 +16,45 @@
 
 package ru.mail.polis.service;
 
+import ru.mail.polis.Cluster;
 import ru.mail.polis.lsm.DAO;
+import ru.mail.polis.service.eldar_tim.HttpServerImpl;
+import ru.mail.polis.service.eldar_tim.LimitedServiceExecutor;
+import ru.mail.polis.service.eldar_tim.ServiceExecutor;
+import ru.mail.polis.sharding.ConsistentHashRouter;
+import ru.mail.polis.sharding.HashRouter;
 
 import java.io.IOException;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Constructs {@link Service} instances.
- *
- * @author Vadim Tsesko
  */
 public final class ServiceFactory {
+    /** Максимальный размер кучи. */
     private static final long MAX_HEAP = 512 * 1024 * 1024;
+
+    /** Число рабочих потоков. */
+    private static final int WORKERS_NUMBER = Runtime.getRuntime().availableProcessors();
+    /** Лимит очереди исполнителя рабочих потоков. */
+    private static final int TASKS_LIMIT = WORKERS_NUMBER;
+
+    /** Число репликаций для каждого узла, включая сам узел. Минимальное значение = 1. */
+    private static final int REPLICAS_NUMBER = 3;
+
+    /** Число проксирующих потоков. */
+    private static final int PROXIES_NUMBER = WORKERS_NUMBER * (int) Math.ceil(REPLICAS_NUMBER / 2f);
+    /** Лимит очереди исполнителя проксирующих потоков. */
+    private static final int PROXIES_LIMIT = Math.max(PROXIES_NUMBER * REPLICAS_NUMBER, REPLICAS_NUMBER * 3);
+
+    private static final Map<Integer, Set<Cluster.Node>> TOPOLOGIES = new ConcurrentHashMap<>();
+    private static final Map<Integer, Cluster.ReplicasHolder> REPLICAS = new ConcurrentHashMap<>();
 
     private ServiceFactory() {
         // Not supposed to be instantiated
@@ -60,6 +86,40 @@ public final class ServiceFactory {
             throw new IllegalArgumentException("Empty cluster");
         }
 
-        throw new UnsupportedOperationException("Implement me!");
+        ServiceExecutor proxies = new LimitedServiceExecutor(PROXIES_LIMIT,
+                LimitedServiceExecutor.createFixedThreadPool("proxy", PROXIES_NUMBER));
+        ServiceExecutor workers = new LimitedServiceExecutor(TASKS_LIMIT,
+                LimitedServiceExecutor.createFixedThreadPool("worker", WORKERS_NUMBER));
+
+        Set<Cluster.Node> clusterNodes = TOPOLOGIES.computeIfAbsent(topology.hashCode(),
+                key -> buildClusterNodes(topology, proxies));
+
+        Comparator<Cluster.Node> comparator = Comparator.comparing(Cluster.Node::getKey);
+        Cluster.ReplicasHolder replicasHolder = REPLICAS.computeIfAbsent(topology.hashCode(),
+                key -> new Cluster.ReplicasHolder(Math.min(REPLICAS_NUMBER, topology.size()),
+                        clusterNodes, comparator));
+
+        Cluster.Node currentNode = findClusterNode(port, clusterNodes);
+        HashRouter<Cluster.Node> hashRouter = new ConsistentHashRouter<>(clusterNodes, 30);
+
+        return new HttpServerImpl(dao, currentNode, replicasHolder, hashRouter, workers, proxies);
+    }
+
+    private static Set<Cluster.Node> buildClusterNodes(Set<String> topologyRaw, ServiceExecutor proxies) {
+        Set<Cluster.Node> topology = new HashSet<>(topologyRaw.size());
+        for (String endpoint : topologyRaw) {
+            Cluster.Node node = new Cluster.Node(endpoint, proxies);
+            topology.add(node);
+        }
+        return topology;
+    }
+
+    private static Cluster.Node findClusterNode(int port, Collection<Cluster.Node> topology) {
+        for (Cluster.Node node : topology) {
+            if (node.port == port) {
+                return node;
+            }
+        }
+        throw new IllegalArgumentException("Port not presented in the collection");
     }
 }

@@ -4,6 +4,9 @@ plugins:
     enabled: true
     config:
       file: "checkstyle.xml"
+    checks:
+      com.puppycrawl.tools.checkstyle.checks.imports.CustomImportOrderCheck:
+        enabled: false
   pmd:
     enabled: true
     config:
@@ -41,12 +44,20 @@ plugins:
         enabled: false
       PrematureDeclaration:
         enabled: false
+      ConfusingTernary:
+        enabled: false
+      CompareObjectsWithEquals:
+        enabled: false
   sonar-java:
     enabled: true
     config:
       sonar.java.source: "11"
     checks:
       squid:S00112:
+        enabled: false
+      squid:S2166:
+        enabled: false
+      squid:HiddenFieldCheck:
         enabled: false
 checks:
   argument-count:
@@ -60,13 +71,16 @@ checks:
       threshold: 15 # We are Russian hackers!
   similar-code:
     config:
-      threshold: 60 # Sometimes it is not so similar
+      threshold: 70 # Sometimes it is not so similar
   identical-code:
     config:
       threshold: 60 # Nope, not a duplicate
   return-statements:
     config:
       threshold: 10 # Have pattern-matching-like code
+  file-lines:
+    config:
+      threshold: 260 # It's still close to 250
 exclude_patterns:
   - "**/*.svg"
   - "src/test/"
